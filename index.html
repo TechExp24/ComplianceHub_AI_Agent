@@ -31,9 +31,7 @@
     }
     .voicebar button{border:0;background:#fff;border-radius:999px;padding:6px 10px;box-shadow:var(--shadow);cursor:pointer}
     .voice-name{font-weight:700;font-size:13px}
-    @media (max-width:640px){
-      .voicebar{left:50%; right:auto; transform:translateX(-50%);}
-    }
+    @media (max-width:640px){ .voicebar{left:50%; right:auto; transform:translateX(-50%);} }
 
     .tapOverlay{position:absolute; inset:0; cursor:pointer; z-index:4;}
 
@@ -144,42 +142,30 @@
   </div>
 
 <script>
-// ADDED: paste your Apps Script Web App /exec URL here (backend API)
-const WEBAPP_URL = 'https://script.google.com/macros/s/AKfycbwWVYmiA1GYDWGwV4HXWPtE0RHgSS4MQJiKXhV7osd_LQy5C9Be1AUu67Hxz0xdT4zjEA/exec';
-</script>
+/* ====================== CONFIG ====================== */
+// CHANGED: use your Apps Script Web App URL (absolute!)
+const BASE = 'https://script.google.com/macros/s/AKfycbwrz0LD4w6bSoowLWjCwD4xImw-wg5lC04mo3s9WsJxX3B6Rbxsgpoq0dQ1Y3AwTbqWkw/exec';
 
-<script>
-/* ---------- ADDED: Apps Script bridge for GitHub Pages (fetch JSON API) ---------- */
-const AppsScript = {
-  call(method, args, cb){
-    // If running inside Apps Script Web App (Option A), use google.script.run
-    if (window.google && google.script && google.script.run) {
-      cb ? google.script.run.withSuccessHandler(cb)[method](args)
-         : google.script.run[method](args);
-      return;
-    }
-    // GitHub Pages / external host → call your Web App doPost JSON API
-    const post = (endpoint, payload, handler) => {
-      fetch(WEBAPP_URL + endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'text/plain' }, // no preflight
-        body: JSON.stringify(payload||{})
-      }).then(r=>r.json()).then(handler).catch(err => { console.warn(err); handler && handler(null); });
-    };
+// —— Mic & silence tuning ——
+const MIC_NOISE = 0.05;   // raise to ignore more background hum
+const MIC_GAIN  = 10;      // overall microphone sensitivity
+const MIC_SMOOTH= 0.10;    // animation smoothing (higher = slower)
+const SILENCE_MS= 600;     // stop listening after this much silence
 
-    if (method === 'apiTtsSynthesize') return post('?api=tts',   args, j => cb && cb(j && j.audio));
-    if (method === 'apiMeta')          return post('?api=meta',  {},   j => cb && cb(j || {timezone:'Europe/London'}));
-    if (method === 'apiNlpQuery')      return post('?api=nlp',   { text: String(args||'') }, j => cb && cb(j));
-    if (method === 'apiCheckToday')    return post('?api=today', {},   j => cb && cb(j));
-    if (method === 'apiCheckRange')    return post('?api=range', args, j => cb && cb(j));
+/* =================== Apps Script bridge =================== */
+async function callApi(api, payload){
+  const res = await fetch(`${BASE}?api=${api}`, {
+    method: 'POST',
+    headers: { 'Content-Type':'application/json' },
+    body: payload ? JSON.stringify(payload) : '{}',
+    mode: 'cors',
+    redirect: 'follow',
+  });
+  if (!res.ok) throw new Error(`API ${api} ${res.status}`);
+  return res.json();
+}
 
-    cb && cb(null);
-  }
-};
-</script>
-
-<script>
-/* ---------- Neon waves (speaking only) ---------- */
+/* ================= Neon waves (speaking only) ================= */
 const waves = document.getElementById('waves');
 const wctx = waves.getContext('2d');
 let waveT=0, waveAmp=0, waveTarget=0;
@@ -204,7 +190,7 @@ function drawWaves(){
 }
 requestAnimationFrame(drawWaves);
 
-/* ---------- Cloud orb (main + mini) ---------- */
+/* ================= Cloud orb (main + mini) ================= */
 const orb=document.getElementById('orb'), ctx=orb.getContext('2d',{alpha:true});
 const miniOrb=document.getElementById('miniOrb'), mctx=miniOrb.getContext('2d',{alpha:true});
 let t=0, micLevel=0, speakLevel=0, mode='idle';
@@ -213,6 +199,7 @@ function setMode(m){
   mode=m; chipState.textContent=(m==='idle')?'Idle':(m==='listening'?'Listening…':'Speaking…');
   waveTarget=(m==='speaking')?0.55:0;
   drawerMic.textContent=(m==='listening')?'🛑 Tap when done':'🎙️ Tap to speak';
+  if (m==='idle') liveCap.textContent='Tap to interact';
 }
 function drawCloud(c,W,H,energy,tick){
   const cx=W/2, cy=H/2, baseR=Math.min(W,H)*0.325;
@@ -237,25 +224,26 @@ function drawCloud(c,W,H,energy,tick){
 function animate(){ const energy=Math.min(1, micLevel + speakLevel*0.9); drawCloud(ctx, orb.width, orb.height, energy, t); drawCloud(mctx, miniOrb.width, miniOrb.height, energy, t); t+=0.016; requestAnimationFrame(animate); }
 requestAnimationFrame(animate);
 
-/* ---------- Voice personas & picker ---------- */
+/* ================= Voice personas & picker ================= */
 const voiceNameEl=document.getElementById('voiceName');
 const prevVoiceBtn=document.getElementById('prevVoice'), nextVoiceBtn=document.getElementById('nextVoice');
 const previewVoiceBtn=document.getElementById('previewVoice'), saveVoiceBtn=document.getElementById('saveVoice');
 const Personas=[
-  { key:'nova',   label:'Nova (warm, f)',    pitch:1.05, rate:1.00, find:/google.*female|samantha|female|voice\s*1/i, line:"Hi there! I’ll keep it friendly and clear." },
-  { key:'atlas',  label:'Atlas (calm, m)',   pitch:0.95, rate:0.98, find:/google.*male|daniel|male|voice\s*2/i,     line:"Good day. I’ll take a steady, calm approach." },
-  { key:'breezy', label:'Breezy (fun, f)',   pitch:1.15, rate:1.06, find:/google.*female|victoria|karen|voice\s*3/i,line:"Oh hey! Let’s make this quick and breezy." },
-  { key:'sage',   label:'Sage (informative)',pitch:1.00, rate:0.94, find:/google|english|voice\s*4/i,               line:"Hello. I’ll keep things factual and to the point." },
-  { key:'blaze',  label:'Blaze (energetic)', pitch:1.05, rate:1.12, find:/google|english|voice\s*5/i,               line:"Hi! Ready to dive in and get this done!" },
-  { key:'pearl',  label:'Pearl (soft, f)',   pitch:1.10, rate:0.93, find:/google.*female|serena|moira|voice\s*6/i,  line:"Hello—nice and gentle. How can I help?" },
-  { key:'orion',  label:'Orion (deep, m)',   pitch:0.85, rate:0.96, find:/google.*male|fred|alex|voice\s*7/i,       line:"Hello. I’ll keep it clear and confident." }
+  { key:'nova',   label:'Nova (warm, f)',    pitch:1.05, rate:1.00, find:/google.*female|samantha|female|voice\s*1/i, line:"Hi there—friendly and clear." },
+  { key:'atlas',  label:'Atlas (calm, m)',   pitch:0.95, rate:0.98, find:/google.*male|daniel|male|voice\s*2/i,     line:"Good day. I’ll take a steady tone." },
+  { key:'breezy', label:'Breezy (fun, f)',   pitch:1.15, rate:1.06, find:/google.*female|victoria|karen|voice\s*3/i,line:"Hey! Let’s keep it breezy." },
+  { key:'sage',   label:'Sage (informative)',pitch:1.00, rate:0.94, find:/google|english|voice\s*4/i,               line:"Hello. I’ll keep it factual and concise." },
+  { key:'blaze',  label:'Blaze (energetic)', pitch:1.05, rate:1.12, find:/google|english|voice\s*5/i,               line:"Hi! Ready to dive in." },
+  { key:'pearl',  label:'Pearl (soft, f)',   pitch:1.10, rate:0.93, find:/google.*female|serena|moira|voice\s*6/i,  line:"Hello—gentle and helpful." },
+  { key:'orion',  label:'Orion (deep, m)',   pitch:0.85, rate:0.96, find:/google.*male|fred|alex|voice\s*7/i,       line:"Hello. Clear and confident." }
 ];
 let voices=[], personaIndex=0, savedPersonaKey=localStorage.getItem('voice.persona')||'nova';
 function loadVoices(){
   voices = (speechSynthesis && speechSynthesis.getVoices) ? speechSynthesis.getVoices() : [];
   if (!voices.length){ setTimeout(loadVoices, 250); return; }
   personaIndex = Math.max(0, Personas.findIndex(p=>p.key===savedPersonaKey));
-  updateVoiceUI(); tryFirstGreeting();
+  updateVoiceUI();
+  // CHANGED: greet is called elsewhere (no tryFirstGreeting left)
 }
 if ('speechSynthesis' in window){ loadVoices(); speechSynthesis.onvoiceschanged = loadVoices; }
 function pickVoiceFor(persona){
@@ -273,36 +261,46 @@ nextVoiceBtn.onclick = ()=>{ personaIndex=(personaIndex+1)%Personas.length; upda
 previewVoiceBtn.onclick = ()=>{ speakWithPersona(currentPersona().line, currentPersona(), true); };
 saveVoiceBtn.onclick = ()=>{ savedPersonaKey=currentPersona().key; localStorage.setItem('voice.persona', savedPersonaKey); updateVoiceUI(); liveCap.textContent=`Saved voice: ${currentPersona().label}`; };
 
-/* ---------- Speak (Neural2 first, then browser) ---------- */
+/* ================= Speak (Neural2 first, then browser) ================= */
+let speaking=false, currentAudio=null;
 function speak(text){
+  if (listening) stopListening(false);
   const persona = Personas.find(p=>p.key===savedPersonaKey)||currentPersona();
-  AppsScript.call('apiTtsSynthesize', { persona: persona.key, text }, (b64)=>{
-    if (b64 && typeof b64 === 'string'){ playAudioB64(b64, text); }
-    else { speakWithPersona(text, persona); }
-  });
+  // try server TTS
+  callApi('tts', { persona: persona.key, text })
+    .then(({audio})=>{
+      if (audio) playAudioB64(audio, text);
+      else speakWithPersona(text, persona);
+    })
+    .catch(()=> speakWithPersona(text, persona));
 }
 function playAudioB64(b64, transcript){
+  if (currentAudio){ try{ currentAudio.pause(); }catch(e){} currentAudio=null; }
   const audio = new Audio('data:audio/mp3;base64,' + b64);
+  currentAudio = audio;
   audio.onplay = ()=>{ speaking=true; setMode('speaking'); pulseSpeak(); logTTS(transcript); liveCap.textContent='Agent: ' + transcript; };
   audio.onended=()=>{ speaking=false; setMode('idle'); speakLevel=0; liveCap.textContent='Tap to interact'; };
-  audio.play().catch(()=>{ speakWithPersona(transcript, currentPersona()); });
+  audio.play().catch(()=>{ // autoplay blocked → fallback to speechSynthesis
+    speakWithPersona(transcript, currentPersona());
+  });
 }
 function speakWithPersona(text, persona, isPreview=false){
   if (!('speechSynthesis' in window)) return;
+  try{ speechSynthesis.cancel(); }catch(e){}
   const u=new SpeechSynthesisUtterance(text);
   const v=pickVoiceFor(persona); if (v) u.voice=v; u.pitch=persona.pitch; u.rate=persona.rate;
   u.onstart=()=>{ speaking=true; setMode('speaking'); pulseSpeak(); if(!isPreview){ logTTS(text); } liveCap.textContent='Agent: ' + text; };
   u.onend=()=>{ speaking=false; setMode('idle'); speakLevel=0; if(!isPreview){ liveCap.textContent='Tap to interact'; } };
-  speechSynthesis.cancel(); speechSynthesis.speak(u);
+  speechSynthesis.speak(u);
 }
 function pulseSpeak(){ if(!speaking) return; const now=performance.now()/1000; speakLevel=0.18+0.14*Math.sin(now*2.6); requestAnimationFrame(pulseSpeak); }
 
-/* ---------- Listening ---------- */
+/* ================= Listening with silence stop ================= */
 let recognition=null, audioCtx=null, analyser=null, micSrc=null, listening=false, streamRef=null;
+let silenceTimer=null, lastSoundAt=0, micEMA=0;
 const tapArea=document.getElementById('tap');
-tapArea.addEventListener('click', ()=>{ if(speaking){try{speechSynthesis.cancel();}catch(e){} speaking=false; speakLevel=0; startListening(); return;}
+tapArea.addEventListener('click', ()=>{ if(speaking){try{speechSynthesis.cancel();}catch(e){} if(currentAudio){try{currentAudio.pause();}catch(e){} } speaking=false; speakLevel=0; startListening(); return;}
   listening? stopListening(true) : startListening(); });
-const MIC_NOISE=0.02, MIC_GAIN=10, MIC_SMOOTH=0.10; let micEMA=0, lastSTTAt=0;
 function startListening(){
   if(listening) return;
   navigator.mediaDevices.getUserMedia({audio:true}).then(stream=>{
@@ -311,25 +309,16 @@ function startListening(){
     if (audioCtx.state==='suspended') audioCtx.resume();
     micSrc = audioCtx.createMediaStreamSource(stream);
     analyser = audioCtx.createAnalyser(); analyser.fftSize=2048; analyser.smoothingTimeConstant=0.85;
-    micSrc.connect(analyser); listening=true; setMode('listening'); meter(); liveCap.textContent='Listening… (live)';
-    const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
-    if(!SR){ logBotCard('Your browser doesn’t support speech recognition. Use the text box in Chat.'); return; }
-    recognition=new SR(); recognition.lang='en-GB'; recognition.interimResults=true; recognition.maxAlternatives=1;
-    recognition.onresult=e=>{
-      let s=''; for(let i=e.resultIndex;i<e.results.length;i++) s+=e.results[i][0].transcript+' ';
-      liveCap.textContent='You: '+s.trim();
-      if (e.results[e.results.length-1].isFinal){ const finalTxt=s.trim(); logSTT(finalTxt); handleQuery(finalTxt); }
-    };
-    recognition.onend=()=>{ if(listening) stopListening(true); };
-    recognition.onerror=e=>console.warn(e.error);
-    try{ recognition.start(); }catch(e){}
+    micSrc.connect(analyser); listening=true; setMode('listening'); liveCap.textContent='Listening… tap when done';
+    meter(); startSR();
   }).catch(err=>{ alert('Microphone permission is required.'); console.warn(err); });
 }
 function stopListening(processNow){
   if(!listening) return; listening=false; setMode('idle'); micLevel=0;
+  if (silenceTimer){ clearTimeout(silenceTimer); silenceTimer=null; }
   try{ recognition && recognition.stop && recognition.stop(); }catch(e){}
   try{ streamRef && streamRef.getTracks().forEach(t=>t.stop()); }catch(e){}
-  if(processNow===true){ setTimeout(()=>{ if (lastSTTAt===0 || Date.now()-lastSTTAt>800){ handleQuery('check today'); } }, 120); }
+  if(processNow===true){ if (!lastSTTAt || Date.now()-lastSTTAt>200){ handleQuery('check today'); } }
 }
 function meter(){
   const buf=new Float32Array(analyser.fftSize);
@@ -339,15 +328,36 @@ function meter(){
     const rms=Math.sqrt(sum/buf.length);
     const target = Math.max(0, Math.min(1, (rms-MIC_NOISE)*MIC_GAIN));
     micEMA = micEMA*(1-MIC_SMOOTH) + target*MIC_SMOOTH; micLevel=micEMA;
+    // voice activity: reset silence timer whenever energy above small threshold
+    const now = performance.now();
+    if (micEMA>0.08){ lastSoundAt=now; if (silenceTimer){ clearTimeout(silenceTimer); silenceTimer=null; } }
+    else if (!silenceTimer && (now - lastSoundAt) > SILENCE_MS) {
+      silenceTimer = setTimeout(()=> stopListening(true), 10);
+    }
     requestAnimationFrame(loop);
   })();
 }
+let lastUserPushedTs = 0;
+function startSR(){
+  const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  if(!SR){ logBotCard('Your browser doesn’t support speech recognition. Use the text box in Chat.'); return; }
+  recognition=new SR(); recognition.lang='en-GB'; recognition.interimResults=true; recognition.maxAlternatives=1; recognition.continuous=true;
+  let interim='';
+  recognition.onresult=e=>{
+    let s=''; for(let i=e.resultIndex;i<e.results.length;i++){ s+=e.results[i][0].transcript+' '; }
+    interim = s.trim(); liveCap.textContent = interim ? ('You: ' + interim) : 'Listening… tap when done';
+    if (e.results[e.results.length-1].isFinal){ const finalTxt=interim; interim=''; logSTT(finalTxt); handleQuery(finalTxt); }
+  };
+  recognition.onend=()=>{ if(listening) stopListening(true); };
+  recognition.onerror=e=>console.warn(e.error);
+  try{ recognition.start(); }catch(e){}
+}
 
-/* ---------- Drawer, chat persistence, greeting ---------- */
+/* ================= Drawer, chat persistence, greeting ================= */
 const drawer=document.getElementById('drawer'), openDrawer=document.getElementById('openDrawer'), closeDrawer=document.getElementById('closeDrawer');
 const drawerMic=document.getElementById('drawerMic');
 openDrawer.onclick=()=>drawer.classList.add('open'); closeDrawer.onclick=()=>drawer.classList.remove('open');
-drawerMic.onclick=()=>{ drawer.classList.add('open'); if(speaking){speechSynthesis.cancel(); speaking=false; speakLevel=0;} listening? stopListening(true) : startListening(); };
+drawerMic.onclick=()=>{ drawer.classList.add('open'); if(speaking){try{speechSynthesis.cancel();}catch(e){} if(currentAudio){try{currentAudio.pause();}catch(e){} } speaking=false; speakLevel=0; } listening? stopListening(true) : startListening(); };
 
 const feed=document.getElementById('feed'), input=document.getElementById('text'), sendBtn=document.getElementById('send'), clearBtn=document.getElementById('clearChat');
 sendBtn.onclick=()=>{ if(!input.value.trim()) return; const q=input.value.trim(); logSTT(q); handleQuery(q); input.value=''; };
@@ -355,12 +365,12 @@ input.addEventListener('keydown',e=>{ if(e.key==='Enter') sendBtn.click(); });
 clearBtn.onclick=()=>{ if (confirm('Clear chat history?')) { localStorage.removeItem('chat.feed'); feed.innerHTML=''; } };
 function push(html){ feed.insertAdjacentHTML('beforeend', html); feed.scrollTop=feed.scrollHeight; localStorage.setItem('chat.feed', feed.innerHTML); }
 function restoreFeed(){ const saved=localStorage.getItem('chat.feed'); if(saved) feed.innerHTML=saved; else greet(); }
-function logSTT(text){ lastSTTAt=Date.now(); push(`<div class="card"><b>You said</b><div class="muted" style="margin-top:4px">${escapeHtml(text)}</div></div>`); }
+function logSTT(text){ lastUserPushedTs=Date.now(); push(`<div class="card"><b>You said</b><div class="muted" style="margin-top:4px">${escapeHtml(text)}</div></div>`); }
 function logTTS(text){ push(`<div class="card"><b>Agent</b><div class="muted" style="margin-top:4px">${escapeHtml(text)}</div></div>`); }
 function logBotCard(msg){ push(`<div class="card"><b>Agent</b><div class="muted" style="margin-top:4px">${escapeHtml(msg)}</div></div>`); }
 
 const tzChip=document.getElementById('chipTZ');
-AppsScript.call('apiMeta', null, m=>{ tzChip.textContent=`Timezone: ${m?.timezone || 'Europe/London'}`; });
+callApi('meta').then(m=>{ tzChip.textContent=`Timezone: ${m.timezone}`; }).catch(()=>{ tzChip.textContent='Timezone: n/a'; });
 
 function greet(){
   const now=new Date();
@@ -373,10 +383,8 @@ function greet(){
   logTTS(line); speak(line);
 }
 restoreFeed();
-let greetedAfterTap=false;
-addEventListener('click', ()=>{ if (!greetedAfterTap && (!speechSynthesis.speaking && !speechSynthesis.pending)){ greetedAfterTap=true; greet(); } }, {once:true});
 
-/* ---------- NLP to backend ---------- */
+/* ================= Intent → backend ================= */
 function handleQuery(text){
   const s=text.trim().toLowerCase();
   if (/^(hi|hello|hey|yo|good\s*(morning|afternoon|evening))\b/.test(s) || /how are you/.test(s)){
@@ -387,10 +395,17 @@ function handleQuery(text){
     ];
     const reply=opens[Math.floor(Math.random()*opens.length)]; logTTS(reply); speak(reply); return;
   }
-  const looksCompliance=/(check|forms?|submit|missing|missed|today|yesterday|week|month|cowley|high street|clements|ricks|philly|clair|temperature|opening|closing|wastage)/.test(s);
-  if(!looksCompliance){ const reply="That might be beyond my capabilities right now. I can check form submissions by location, form, or date range."; logTTS(reply); speak(reply); return; }
+  const looksCompliance=/(check|forms?|submit|missing|missed|today|yesterday|week|month|cowley|high street|clements|ricks|philly|clair|temperature|opening|closing|wastage|toilet|breading|prep)/.test(s);
+  if(!looksCompliance){ const reply="That might be beyond my capabilities right now. I can check form submissions by location, form, staff, or date range."; logTTS(reply); speak(reply); return; }
 
-  AppsScript.call('apiNlpQuery', text, (payload)=>{ if (!payload) { const msg="Hmm, I couldn’t reach the server."; logTTS(msg); speak(msg); return; } showPayload(payload); speak(payload.summaryLine || 'Done.'); });
+  callApi('nlp', { text }).then(payload=>{
+    showPayload(payload);
+    speak(payload.summaryLine || 'Done.');
+  }).catch(err=>{
+    console.warn(err);
+    const reply="Hmm, I couldn’t reach the server. Please check the web-app URL in the page.";
+    logBotCard(reply); speak(reply);
+  });
 }
 function showPayload(payload){
   const { queryParsed, summary, results } = payload;
@@ -398,17 +413,34 @@ function showPayload(payload){
     ${queryParsed.business? `<div><b>Business:</b> ${escapeHtml(queryParsed.business)}</div>`:''}
     ${queryParsed.location? `<div><b>Location:</b> ${escapeHtml(queryParsed.location)}</div>`:''}
     ${queryParsed.formName? `<div><b>Form:</b> ${escapeHtml(queryParsed.formName)}</div>`:''}
+    ${queryParsed.staffName? `<div><b>Staff:</b> ${escapeHtml(queryParsed.staffName)}</div>`:''}
     <div class="muted">${summary.counts.missed} missed · ${summary.counts.submitted} submitted · ${summary.counts.upcoming} upcoming</div></div>`;
   push(hdr);
-  const missed=results.filter(r=>r.status==='missed'); if (missed.length){ push(`<div class="grid">${missed.map(r=>card(r,'❌ Missed')).join('')}</div>`); } else { push(`<div class="card">✅ No missed slots in this range.</div>`); }
-  const recent=results.filter(r=>r.status==='submitted').slice(-6); if (recent.length){ push(`<div class="muted" style="margin-top:8px">Recent submissions</div>`); push(`<div class="grid">${recent.map(r=>card(r,'✅ Submitted')).join('')}</div>`); }
+
+  if (!results.length){ push(`<div class="card">No slots in this range.</div>`); return; }
+
+  const missed = results.filter(r=>r.status==='missed' || r.status==='missed-by-staff');
+  if (missed.length){
+    push(`<div class="grid">${missed.map(r=>card(r,'❌ Missed')).join('')}</div>`);
+  } else {
+    push(`<div class="card">✅ No missed slots in this range.</div>`);
+  }
+
+  const recent = results.filter(r=>r.status==='submitted').slice(-8);
+  if (recent.length){
+    push(`<div class="muted" style="margin-top:8px">Recent submissions</div>`);
+    push(`<div class="grid">${recent.map(r=>card(r,'✅ Submitted')).join('')}</div>`);
+  }
 }
 function card(r,badge){
   const due=new Date(r.dueISO); const when=due.toLocaleString(undefined,{weekday:'short',day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'});
-  const sub=r.foundSubmissionAtISO?new Date(r.foundSubmissionAtISO).toLocaleString():'';
+  const sub=r.foundSubmissionAtISO?new Date(r.foundSubmissionAtISO).toLocaleString():''; 
+  const who = r.submitter || r.lastSubmitter || '';
   return `<div class="card"><div><b>${badge}</b></div><div>${escapeHtml(r.location)}</div>
     <div>${escapeHtml(r.formName)} <span class="pill">${escapeHtml(r.slotLabel)}</span></div>
-    <div class="muted">Due: ${when}</div><div class="muted">Status: ${r.status}${sub?' · submitted at '+sub:''}</div>
+    ${who? `<div class="muted">Last by: ${escapeHtml(who)}</div>`:''}
+    <div class="muted">Due: ${when}</div>
+    <div class="muted">Status: ${r.status}${sub?' · submitted at '+sub:''}</div>
     <div class="muted"><a target="_blank" href="${r.formUrl}">Open form</a> · <a target="_blank" href="${r.responsesUrl}">Responses sheet</a></div></div>`;
 }
 function escapeHtml(s){return String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m]));}
