@@ -24,7 +24,6 @@
     }
     canvas#waves{position:absolute; inset:0; width:100%; height:100%; display:block;}
 
-    /* Voice chooser: desktop top-right, mobile centered */
     .voicebar{
       position:absolute; top:14px; right:14px; z-index:5;
       display:flex; align-items:center; gap:6px; background:var(--panel);
@@ -145,29 +144,41 @@
   </div>
 
 <script>
-/* ---------- Apps Script bridge ---------- */
+// ADDED: paste your Apps Script Web App /exec URL here (backend API)
+const WEBAPP_URL = 'https://script.google.com/macros/s/AKfycbzU48wQeeuxPcSgqMUugSmY_z-GxKnjpeLmPV5vqT6tfs70voJ3Mpj4DrL3hhYV46lUmQ/exec';
+</script>
+
+<script>
+/* ---------- ADDED: Apps Script bridge for GitHub Pages (fetch JSON API) ---------- */
 const AppsScript = {
   call(method, args, cb){
+    // If running inside Apps Script Web App (Option A), use google.script.run
     if (window.google && google.script && google.script.run) {
-      if (cb) google.script.run.withSuccessHandler(cb)[method](args);
-      else google.script.run[method](args);
-    } else {
-      // Local preview fallback (VS Code): no API calls, just stubs
-      if (method==='apiMeta') return cb?.({timezone:'Europe/London'});
-      if (method==='apiTtsSynthesize') return cb?.(null); // force browser voice locally
-      const now=new Date();
-      const payload={queryParsed:{}, summaryLine:'I found 1 missed slot.',
-        summary:{range:{startISO:now.toISOString(), endISO:now.toISOString()}, timezone:'Europe/London',
-          counts:{total:1, missed:1, submitted:0, upcoming:0}},
-        results:[{date:now.toISOString().slice(0,10), business:'Demo', location:"Rick’s Diner — Cowley Road",
-          formName:'Opening Checklist', slotLabel:'OPEN', dueISO:now.toISOString(),
-          windowStartISO:now.toISOString(), windowEndISO:now.toISOString(),
-          status:'missed', foundSubmissionAtISO:null, formUrl:'#', responsesUrl:'#'}]};
-      setTimeout(()=>cb?.(payload), 300);
+      cb ? google.script.run.withSuccessHandler(cb)[method](args)
+         : google.script.run[method](args);
+      return;
     }
+    // GitHub Pages / external host → call your Web App doPost JSON API
+    const post = (endpoint, payload, handler) => {
+      fetch(WEBAPP_URL + endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain' }, // no preflight
+        body: JSON.stringify(payload||{})
+      }).then(r=>r.json()).then(handler).catch(err => { console.warn(err); handler && handler(null); });
+    };
+
+    if (method === 'apiTtsSynthesize') return post('?api=tts',   args, j => cb && cb(j && j.audio));
+    if (method === 'apiMeta')          return post('?api=meta',  {},   j => cb && cb(j || {timezone:'Europe/London'}));
+    if (method === 'apiNlpQuery')      return post('?api=nlp',   { text: String(args||'') }, j => cb && cb(j));
+    if (method === 'apiCheckToday')    return post('?api=today', {},   j => cb && cb(j));
+    if (method === 'apiCheckRange')    return post('?api=range', args, j => cb && cb(j));
+
+    cb && cb(null);
   }
 };
+</script>
 
+<script>
 /* ---------- Neon waves (speaking only) ---------- */
 const waves = document.getElementById('waves');
 const wctx = waves.getContext('2d');
@@ -177,7 +188,7 @@ addEventListener('resize', sizeWaves); sizeWaves();
 const lineColors=['rgba(77,207,255,0.22)','rgba(255,92,244,0.22)','rgba(127,255,127,0.20)','rgba(255,209,102,0.20)','rgba(167,139,250,0.22)','rgba(255,133,133,0.20)','rgba(120,170,255,0.22)'];
 function drawWaves(){
   const W=waves.clientWidth, H=waves.clientHeight; wctx.clearRect(0,0,W,H);
-  waveAmp += (waveTarget - waveAmp)*0.035; // smooth fade
+  waveAmp += (waveTarget - waveAmp)*0.035;
   const lines=7, baseY=H*0.56, gap=18; wctx.globalCompositeOperation='lighter';
   for(let i=0;i<lines;i++){
     const y0 = baseY + (i-3)*gap, color = lineColors[i%lineColors.length];
@@ -248,7 +259,6 @@ function loadVoices(){
 }
 if ('speechSynthesis' in window){ loadVoices(); speechSynthesis.onvoiceschanged = loadVoices; }
 function pickVoiceFor(persona){
-  // Prefer Chrome's "Google UK/US English ..." if available
   let v = voices.find(v=>/google (uk|us) english/i.test(v.name) && /en/i.test(v.lang) && persona.find.test(v.name));
   if (!v) v = voices.find(v=>/google (uk|us) english/i.test(v.name) && /en/i.test(v.lang));
   return v || voices.find(v=>/en(-|_)?/i.test(v.lang)) || voices[0];
@@ -275,7 +285,7 @@ function playAudioB64(b64, transcript){
   const audio = new Audio('data:audio/mp3;base64,' + b64);
   audio.onplay = ()=>{ speaking=true; setMode('speaking'); pulseSpeak(); logTTS(transcript); liveCap.textContent='Agent: ' + transcript; };
   audio.onended=()=>{ speaking=false; setMode('idle'); speakLevel=0; liveCap.textContent='Tap to interact'; };
-  audio.play().catch(()=>{ /* if audio balks, fallback to browser voice */ speakWithPersona(transcript, currentPersona()); });
+  audio.play().catch(()=>{ speakWithPersona(transcript, currentPersona()); });
 }
 function speakWithPersona(text, persona, isPreview=false){
   if (!('speechSynthesis' in window)) return;
@@ -287,7 +297,7 @@ function speakWithPersona(text, persona, isPreview=false){
 }
 function pulseSpeak(){ if(!speaking) return; const now=performance.now()/1000; speakLevel=0.18+0.14*Math.sin(now*2.6); requestAnimationFrame(pulseSpeak); }
 
-/* ---------- Listening (smoothed so it’s not too fast) ---------- */
+/* ---------- Listening ---------- */
 let recognition=null, audioCtx=null, analyser=null, micSrc=null, listening=false, streamRef=null;
 const tapArea=document.getElementById('tap');
 tapArea.addEventListener('click', ()=>{ if(speaking){try{speechSynthesis.cancel();}catch(e){} speaking=false; speakLevel=0; startListening(); return;}
@@ -350,7 +360,7 @@ function logTTS(text){ push(`<div class="card"><b>Agent</b><div class="muted" st
 function logBotCard(msg){ push(`<div class="card"><b>Agent</b><div class="muted" style="margin-top:4px">${escapeHtml(msg)}</div></div>`); }
 
 const tzChip=document.getElementById('chipTZ');
-AppsScript.call('apiMeta', null, m=>{ tzChip.textContent=`Timezone: ${m.timezone}`; });
+AppsScript.call('apiMeta', null, m=>{ tzChip.textContent=`Timezone: ${m?.timezone || 'Europe/London'}`; });
 
 function greet(){
   const now=new Date();
@@ -366,7 +376,7 @@ restoreFeed();
 let greetedAfterTap=false;
 addEventListener('click', ()=>{ if (!greetedAfterTap && (!speechSynthesis.speaking && !speechSynthesis.pending)){ greetedAfterTap=true; greet(); } }, {once:true});
 
-/* ---------- Simple intent shim then backend ---------- */
+/* ---------- NLP to backend ---------- */
 function handleQuery(text){
   const s=text.trim().toLowerCase();
   if (/^(hi|hello|hey|yo|good\s*(morning|afternoon|evening))\b/.test(s) || /how are you/.test(s)){
@@ -380,7 +390,7 @@ function handleQuery(text){
   const looksCompliance=/(check|forms?|submit|missing|missed|today|yesterday|week|month|cowley|high street|clements|ricks|philly|clair|temperature|opening|closing|wastage)/.test(s);
   if(!looksCompliance){ const reply="That might be beyond my capabilities right now. I can check form submissions by location, form, or date range."; logTTS(reply); speak(reply); return; }
 
-  AppsScript.call('apiNlpQuery', text, (payload)=>{ showPayload(payload); speak(payload.summaryLine || 'Done.'); });
+  AppsScript.call('apiNlpQuery', text, (payload)=>{ if (!payload) { const msg="Hmm, I couldn’t reach the server."; logTTS(msg); speak(msg); return; } showPayload(payload); speak(payload.summaryLine || 'Done.'); });
 }
 function showPayload(payload){
   const { queryParsed, summary, results } = payload;
