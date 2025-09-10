@@ -199,7 +199,7 @@ function drawWaves(){
   }
   wctx.shadowBlur=0; wctx.globalCompositeOperation='source-over'; waveT += 1; requestAnimationFrame(drawWaves);
 }
-requestAnimationFrame(drawWaves());
+requestAnimationFrame(drawWaves);
 
 /* ====== Cloud orb (main + mini) ====== */
 const orb=document.getElementById('orb'), ctx=orb.getContext('2d',{alpha:true});
