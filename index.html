@@ -4,13 +4,12 @@
   <meta charset="utf-8" />
   <title>Compliance Agent</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <!-- silence favicon 404 -->
-  <link rel="icon" href="data:,">
+  <link rel="icon" href="data:,"><!-- avoid favicon 404 -->
   <style>
     :root{ --bg:#F7F8FC; --panel:#FFF; --ink:#2C3142; --muted:#8C95A6; --brand:#4F8CF3;
            --radius:18px; --shadow:0 10px 28px rgba(55,97,194,.12); }
     html,body{height:100%;margin:0;background:var(--bg);color:var(--ink);
-      font-family:ui-sans-serif,-apple-system,"Segoe UI",Roboto,Arial,"Noto Sans");}
+      font-family:ui-sans-serif,-apple-system,"Segoe UI",Roboto,Arial,"Noto Sans";}
     .wrap{max-width:1040px;margin:0 auto;padding:18px 14px;}
     .hero{position:relative; display:grid; place-items:center; min-height:60vh; border-radius:var(--radius);
       background: radial-gradient(1200px 600px at 50% 0%, #EAF3FF 0%, transparent 55%),
@@ -47,7 +46,7 @@
     .card{border:1px solid #E9EDF6; border-radius:12px; padding:12px; background:#fff;}
     .pill{display:inline-block; padding:2px 8px; border-radius:999px; background:#EFF5FF; color:#2A60D8; font-size:12px; margin-left:6px;}
     .muted{color:var(--muted); font-size:13px;}
-    a{color:#2A60D8; text-decoration:none;}
+    a{color:var(--brand); text-decoration:none;}
     .row{display:flex; gap:8px; align-items:center; flex-wrap:wrap;}
     .inputbar{position:sticky; bottom:0; background:#fff; padding:12px 0 2px; margin-top:10px;}
     .input{display:flex; gap:8px;}
@@ -64,7 +63,6 @@
     <div class="hero" id="hero">
       <canvas id="waves"></canvas>
 
-      <!-- voice chooser -->
       <div class="voicebar" id="voiceBar" title="Change voice">
         <button id="prevVoice">◀</button>
         <span class="voice-name" id="voiceName">Voice</span>
@@ -123,12 +121,12 @@
 <script>
 /* ====== CONFIG (edit API_BASE) ====== */
 const API_BASE = 'https://script.google.com/macros/s/AKfycbxZ5PsA_5d2jkE6n5W3tqLro08rvJqp5JtX88I039JdTPCbTH1_VzAtwi8BGFwd_euUjQ/exec';
-const USE_SERVER_TTS = true;       // set true if you added TTS_API_KEY in Apps Script
+const USE_SERVER_TTS = true;       // true only if you set TTS_API_KEY in Apps Script
 const GREET_ON_FIRST_TAP = true;
 const AUTO_TURN_TAKING = true;
 const TURN_TAKE_DELAY_MS = 1000;
 
-/* ====== JSONP (avoids CORS; Apps Script redirects with 302 → echo) ====== */
+/* ====== JSONP API (no CORS issues) ====== */
 function jsonp(url){
   return new Promise((resolve, reject)=>{
     const cb = 'cb_' + Math.random().toString(36).slice(2);
@@ -146,14 +144,14 @@ const API = {
   tts:  (persona, text) => jsonp(API_BASE + '?api=tts&persona=' + encodeURIComponent(persona) + '&text=' + encodeURIComponent(text))
 };
 
-/* ====== Tunables (VAD) – softer so it doesn’t cut off too soon ====== */
-const MIC_NOISE = 0.04;
-const MIC_GAIN  = 10;
-const MIC_SMOOTH= 0.18;
-const LISTEN_MAX_MS = 12000;       // overall hard cap
-const INITIAL_GRACE_MS = 3000;     // don’t stop for first 3s if no speech yet
-const SILENCE_START_THRESHOLD = 0.07;
-const SILENCE_HOLD_MS = 1200;
+/* ====== Tunables (Softer VAD + more grace) ====== */
+const MIC_NOISE = 0.03;
+const MIC_GAIN  = 12;
+const MIC_SMOOTH= 0.22;
+const LISTEN_MAX_MS = 14000;
+const INITIAL_GRACE_MS = 4000;       // don’t stop early until 4s if no speech yet
+const SILENCE_START_THRESHOLD = 0.05; // lower threshold so speech is detected more easily
+const SILENCE_HOLD_MS = 1400;
 
 /* ====== Mic & SR status ====== */
 const chipMic = document.getElementById('chipMic');
@@ -201,7 +199,7 @@ function drawWaves(){
   }
   wctx.shadowBlur=0; wctx.globalCompositeOperation='source-over'; waveT += 1; requestAnimationFrame(drawWaves);
 }
-requestAnimationFrame(drawWaves);
+requestAnimationFrame(drawWaves());
 
 /* ====== Cloud orb (main + mini) ====== */
 const orb=document.getElementById('orb'), ctx=orb.getContext('2d',{alpha:true});
@@ -331,9 +329,9 @@ async function primeMicPermission(){
   }
 }
 
-/* ====== Listening + softer VAD (does not stop until speech is heard or hard cap) ====== */
+/* ====== Listening + softer VAD + auto-retry on no-speech ====== */
 let recognition=null, audioCtx=null, analyser=null, micSrc=null, listening=false, streamRef=null;
-let listenStartedAt=0, lastLoudAt=0, heardSpeech=false;
+let listenStartedAt=0, lastLoudAt=0, heardSpeech=false, retryCount=0;
 const tapArea=document.getElementById('tap');
 let firstTapDone=false;
 
@@ -341,8 +339,7 @@ tapArea.addEventListener('click', async ()=>{
   if (speaking){ stopSpeaking(); startListening(); return; }
   if (!firstTapDone && GREET_ON_FIRST_TAP){
     firstTapDone = true;
-    const ok = await primeMicPermission();
-    if (!ok) return;
+    const ok = await primeMicPermission(); if (!ok) return;
     greet(()=> startListening());
     return;
   }
@@ -354,7 +351,7 @@ function startListening(){
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SR){
     chipSR.textContent='SR: not supported';
-    logBotCard('Speech recognition is not supported in this browser. Please use the text box or try Chrome.');
+    logBotCard('Speech recognition is not supported in this browser. Please use the text box or try Google Chrome.');
     return;
   }
   if (listening) return;
@@ -372,9 +369,10 @@ function startListening(){
     recognition.lang='en-GB';
     recognition.interimResults=true;
     recognition.maxAlternatives=1;
-    recognition.continuous=false;   // let it end on its own when speech ends
+    recognition.continuous=true;   // more tolerant; we will stop via VAD/end
 
     heardSpeech = false;
+    retryCount = 0;
     listening=true; setMode('listening');
     listenStartedAt=performance.now(); lastLoudAt=listenStartedAt;
 
@@ -385,12 +383,23 @@ function startListening(){
     recognition.onnomatch    = ()=> { logBotCard('I didn’t catch that.'); };
     recognition.onerror      = (e)=>{
       console.warn('SR error', e.error);
-      let msg='Speech recognition error.';
-      if (e.error === 'no-speech') msg='No speech heard. Try again closer to the mic.';
-      if (e.error === 'audio-capture') msg='No microphone found. Check your mic device.';
-      if (e.error === 'not-allowed') msg='Microphone blocked. Click the padlock in the address bar → allow microphone, then reload.';
       chipSR.textContent='SR: error ' + e.error;
-      logBotCard(msg);
+      if (e.error === 'no-speech' && retryCount < 2){
+        // If mic shows energy, auto-retry once or twice.
+        retryCount++;
+        try{ recognition.stop(); }catch(_){}
+        setTimeout(()=>{ try{ recognition.start(); chipSR.textContent='SR: retry '+retryCount; }catch(_){ stopListening(); } }, 250);
+        return;
+      }
+      if (e.error === 'not-allowed'){
+        logBotCard('Microphone blocked. Click the padlock → allow microphone, then reload.');
+      } else if (e.error === 'audio-capture'){
+        logBotCard('No microphone found. Check your mic device in Chrome settings.');
+      } else if (e.error === 'no-speech'){
+        logBotCard('No speech heard. Try again closer to the mic.');
+      } else {
+        logBotCard('Speech recognition error: ' + e.error);
+      }
     };
     recognition.onend = ()=>{ stopListening(); };
 
@@ -454,10 +463,10 @@ function vadLoop(){
     const longSilent = (now - lastLoudAt) > SILENCE_HOLD_MS;
     const tooLong = timeSinceStart > LISTEN_MAX_MS;
 
-    // If we haven't heard speech yet, don't stop early;
-    // give INITIAL_GRACE_MS before we even consider silence.
+    // If we haven't heard speech yet, be generous for INITIAL_GRACE_MS.
     if (!heardSpeech){
-      if (tooLong){ try{ recognition && recognition.stop && recognition.stop(); }catch(e){} }
+      if (timeSinceStart > INITIAL_GRACE_MS && longSilent){ try{ recognition && recognition.stop && recognition.stop(); }catch(e){} }
+      else if (tooLong){ try{ recognition && recognition.stop && recognition.stop(); }catch(e){} }
     } else {
       if (longSilent || tooLong){ try{ recognition && recognition.stop && recognition.stop(); }catch(e){} }
     }
