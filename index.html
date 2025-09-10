@@ -4,19 +4,19 @@
   <meta charset="utf-8" />
   <title>Compliance Agent</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <!-- Silence the favicon 404 -->
+  <!-- silence favicon 404 -->
   <link rel="icon" href="data:,">
   <style>
     :root{ --bg:#F7F8FC; --panel:#FFF; --ink:#2C3142; --muted:#8C95A6; --brand:#4F8CF3;
            --radius:18px; --shadow:0 10px 28px rgba(55,97,194,.12); }
     html,body{height:100%;margin:0;background:var(--bg);color:var(--ink);
-      font-family:ui-sans-serif,-apple-system,"Segoe UI",Roboto,Arial,"Noto Sans";}
+      font-family:ui-sans-serif,-apple-system,"Segoe UI",Roboto,Arial,"Noto Sans");}
     .wrap{max-width:1040px;margin:0 auto;padding:18px 14px;}
-    .hero{ position:relative; display:grid; place-items:center; min-height:60vh; border-radius:var(--radius);
+    .hero{position:relative; display:grid; place-items:center; min-height:60vh; border-radius:var(--radius);
       background: radial-gradient(1200px 600px at 50% 0%, #EAF3FF 0%, transparent 55%),
                   radial-gradient(900px 540px at 0% 100%,  #F4FFF6 0%, transparent 55%),
                   radial-gradient(900px 540px at 100% 100%,#FFF1F7 0%, transparent 55%);
-      overflow:hidden; touch-action:manipulation; }
+      overflow:hidden; touch-action:manipulation;}
     canvas#waves{position:absolute; inset:0; width:100%; height:100%; display:block;}
     .voicebar{ position:absolute; top:14px; right:14px; z-index:5; display:flex; align-items:center; gap:6px;
       background:var(--panel); border:1px solid #E8ECF6; border-radius:999px; padding:8px 10px; box-shadow:var(--shadow);}
@@ -64,6 +64,7 @@
     <div class="hero" id="hero">
       <canvas id="waves"></canvas>
 
+      <!-- voice chooser -->
       <div class="voicebar" id="voiceBar" title="Change voice">
         <button id="prevVoice">◀</button>
         <span class="voice-name" id="voiceName">Voice</span>
@@ -74,12 +75,15 @@
 
       <div class="orb-wrap"><canvas id="orb" width="640" height="640"></canvas></div>
       <div class="chip live" id="liveCaption">Tap to speak</div>
+
       <div class="chips">
         <div class="chip" id="chipState">Idle</div>
         <div class="chip" id="chipMic">Mic: …</div>
         <div class="chip" id="chipSR">SR: …</div>
+        <div class="chip" id="chipLevel">Level: 0.00</div>
         <div class="chip" id="chipTZ">Loading…</div>
       </div>
+
       <div class="tapOverlay" id="tap" aria-label="Tap to speak"></div>
     </div>
   </div>
@@ -100,7 +104,11 @@
     </div>
     <div class="drawer-content">
       <div class="drawer-inner">
-        <div id="feed"></div>
+        <div class="row" style="gap:6px;">
+          <button id="btnPing" class="btn ghost">🔌 Test API</button>
+          <button id="btnSample" class="btn ghost">🧪 Sample query</button>
+        </div>
+        <div id="feed" style="margin-top:8px;"></div>
         <div class="inputbar">
           <div class="input">
             <input id="text" placeholder="Type a question…" />
@@ -113,42 +121,44 @@
   </div>
 
 <script>
-/* ===== CONFIG ===== */
-const API_BASE = 'https://script.google.com/macros/s/AKfycbxZ5PsA_5d2jkE6n5W3tqLro08rvJqp5JtX88I039JdTPCbTH1_VzAtwi8BGFwd_euUjQ/exec'; // e.g. https://script.google.com/macros/s/AK.../exec
-const USE_SERVER_TTS = true;     // true if you set TTS_API_KEY in Apps Script
+/* ====== CONFIG (edit API_BASE) ====== */
+const API_BASE = 'https://script.google.com/macros/s/AKfycbxZ5PsA_5d2jkE6n5W3tqLro08rvJqp5JtX88I039JdTPCbTH1_VzAtwi8BGFwd_euUjQ/exec';
+const USE_SERVER_TTS = true;       // set true if you added TTS_API_KEY in Apps Script
 const GREET_ON_FIRST_TAP = true;
-const AUTO_TURN_TAKING = true;    // auto-listen after agent finishes talking
-const TURN_TAKE_DELAY_MS = 1000;  // 1s pause before re-listening
+const AUTO_TURN_TAKING = true;
+const TURN_TAKE_DELAY_MS = 1000;
 
-/* ===== JSONP loader (avoids CORS) ===== */
+/* ====== JSONP (avoids CORS; Apps Script redirects with 302 → echo) ====== */
 function jsonp(url){
   return new Promise((resolve, reject)=>{
     const cb = 'cb_' + Math.random().toString(36).slice(2);
     const s = document.createElement('script');
-    const cleanup = () => { try { delete window[cb]; } catch(e){} try { s.remove(); } catch(e){} };
+    const cleanup = ()=>{ try{ delete window[cb]; }catch(e){} try{s.remove();}catch(e){} };
     window[cb] = (data)=>{ cleanup(); resolve(data); };
     s.onerror = (e)=>{ cleanup(); reject(e); };
-    s.src = url + (url.includes('?') ? '&' : '?') + 'callback=' + cb;
+    s.src = url + (url.includes('?')?'&':'?') + 'callback=' + cb;
     document.body.appendChild(s);
   });
 }
 const API = {
   meta: () => jsonp(API_BASE + '?api=meta'),
-  nlp:  (q) => jsonp(API_BASE + '?api=nlp&q=' + encodeURIComponent(q)),
+  nlp:  (q)  => jsonp(API_BASE + '?api=nlp&q=' + encodeURIComponent(q)),
   tts:  (persona, text) => jsonp(API_BASE + '?api=tts&persona=' + encodeURIComponent(persona) + '&text=' + encodeURIComponent(text))
 };
 
-/* ===== TUNABLE KNOBS (VAD + Anim) ===== */
-const MIC_NOISE = 0.05;
-const MIC_GAIN  = 8;
-const MIC_SMOOTH= 0.16;
-const LISTEN_MAX_MS = 8000;
-const SILENCE_START_THRESHOLD = 0.11;
-const SILENCE_HOLD_MS = 900;
+/* ====== Tunables (VAD) – softer so it doesn’t cut off too soon ====== */
+const MIC_NOISE = 0.04;
+const MIC_GAIN  = 10;
+const MIC_SMOOTH= 0.18;
+const LISTEN_MAX_MS = 12000;       // overall hard cap
+const INITIAL_GRACE_MS = 3000;     // don’t stop for first 3s if no speech yet
+const SILENCE_START_THRESHOLD = 0.07;
+const SILENCE_HOLD_MS = 1200;
 
-/* ===== Mic & SR status ===== */
+/* ====== Mic & SR status ====== */
 const chipMic = document.getElementById('chipMic');
 const chipSR  = document.getElementById('chipSR');
+const chipLvl = document.getElementById('chipLevel');
 async function refreshMicStatus(){
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
     chipMic.textContent = 'Mic: unsupported'; return;
@@ -169,7 +179,7 @@ function refreshSRStatus(){
 }
 refreshMicStatus(); refreshSRStatus();
 
-/* ===== Neon waves ===== */
+/* ====== Neon waves ====== */
 const waves = document.getElementById('waves');
 const wctx = waves.getContext('2d');
 let waveT=0, waveAmp=0, waveTarget=0;
@@ -193,7 +203,7 @@ function drawWaves(){
 }
 requestAnimationFrame(drawWaves);
 
-/* ===== Cloud orb (main + mini) ===== */
+/* ====== Cloud orb (main + mini) ====== */
 const orb=document.getElementById('orb'), ctx=orb.getContext('2d',{alpha:true});
 const miniOrb=document.getElementById('miniOrb'), mctx=miniOrb.getContext('2d',{alpha:true});
 let t=0, micLevel=0, speakLevel=0, mode='idle';
@@ -228,7 +238,7 @@ function drawCloud(c,W,H,energy,tick){
 function animate(){ const energy=Math.min(1, micLevel + speakLevel*0.9); drawCloud(ctx, orb.width, orb.height, energy, t); drawCloud(mctx, miniOrb.width, miniOrb.height, energy, t); t+=0.016; requestAnimationFrame(animate); }
 requestAnimationFrame(animate);
 
-/* ===== Voice personas (browser TTS baseline) ===== */
+/* ====== Browser voices (fallback if server TTS off) ====== */
 const voiceNameEl=document.getElementById('voiceName');
 const prevVoiceBtn=document.getElementById('prevVoice'), nextVoiceBtn=document.getElementById('nextVoice');
 const previewVoiceBtn=document.getElementById('previewVoice'), saveVoiceBtn=document.getElementById('saveVoice');
@@ -266,7 +276,7 @@ nextVoiceBtn.onclick = ()=>{ personaIndex=(personaIndex+1)%Personas.length; upda
 previewVoiceBtn.onclick = ()=>{ speakWithPersona(currentPersona().line, currentPersona(), true); };
 saveVoiceBtn.onclick = ()=>{ savedPersonaKey=currentPersona().key; localStorage.setItem('voice.persona', savedPersonaKey); updateVoiceUI(); liveCap.textContent=`Saved voice: ${currentPersona().label}`; };
 
-/* ===== Speak (Neural2 preferred if enabled) ===== */
+/* ====== Speak helpers ====== */
 let speaking=false, currentAudio=null;
 function stopSpeaking(){
   try{ speechSynthesis.cancel(); }catch(e){}
@@ -304,7 +314,7 @@ function speakWithPersona(text, persona, isPreview=false){
 }
 function pulseSpeak(){ if(!speaking) return; const now=performance.now()/1000; speakLevel=0.18+0.14*Math.sin(now*2.6); requestAnimationFrame(pulseSpeak); }
 
-/* ===== Ask mic permission on first tap, greet then listen ===== */
+/* ====== First tap: request mic, greet, then auto-listen ====== */
 async function primeMicPermission(){
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return false;
   try{
@@ -321,9 +331,9 @@ async function primeMicPermission(){
   }
 }
 
-/* ===== Listening with silence VAD ===== */
+/* ====== Listening + softer VAD (does not stop until speech is heard or hard cap) ====== */
 let recognition=null, audioCtx=null, analyser=null, micSrc=null, listening=false, streamRef=null;
-let listenStartedAt=0, lastLoudAt=0;
+let listenStartedAt=0, lastLoudAt=0, heardSpeech=false;
 const tapArea=document.getElementById('tap');
 let firstTapDone=false;
 
@@ -362,17 +372,21 @@ function startListening(){
     recognition.lang='en-GB';
     recognition.interimResults=true;
     recognition.maxAlternatives=1;
-    // More event logging for reliability
+    recognition.continuous=false;   // let it end on its own when speech ends
+
+    heardSpeech = false;
+    listening=true; setMode('listening');
+    listenStartedAt=performance.now(); lastLoudAt=listenStartedAt;
+
     recognition.onaudiostart = ()=> { chipSR.textContent='SR: audio-start'; };
     recognition.onsoundstart = ()=> { chipSR.textContent='SR: sound-start'; };
-    recognition.onspeechstart= ()=> { chipSR.textContent='SR: speech-start'; };
-    recognition.onsoundend  = ()=> { /* keep quiet */ };
-    recognition.onaudioend  = ()=> { /* keep quiet */ };
-    recognition.onnomatch   = ()=> { logBotCard('I didn’t catch that.'); };
-    recognition.onerror     = (e)=>{
+    recognition.onspeechstart= ()=> { chipSR.textContent='SR: speech-start'; heardSpeech=true; };
+    recognition.onspeechend  = ()=> { chipSR.textContent='SR: speech-end'; };
+    recognition.onnomatch    = ()=> { logBotCard('I didn’t catch that.'); };
+    recognition.onerror      = (e)=>{
       console.warn('SR error', e.error);
       let msg='Speech recognition error.';
-      if (e.error === 'no-speech') msg='No speech heard. Try again a bit closer to the mic.';
+      if (e.error === 'no-speech') msg='No speech heard. Try again closer to the mic.';
       if (e.error === 'audio-capture') msg='No microphone found. Check your mic device.';
       if (e.error === 'not-allowed') msg='Microphone blocked. Click the padlock in the address bar → allow microphone, then reload.';
       chipSR.textContent='SR: error ' + e.error;
@@ -401,9 +415,6 @@ function startListening(){
       }
     };
 
-    listening=true; setMode('listening');
-    listenStartedAt=performance.now(); lastLoudAt=listenStartedAt;
-
     try{ recognition.start(); chipSR.textContent='SR: started'; }catch(e){ console.warn(e); chipSR.textContent='SR: failed to start'; }
 
     meter(); vadLoop();
@@ -423,53 +434,58 @@ function stopListening(){
   streamRef=null;
 }
 function meter(){
-  const buf=new Float32Array(analyser.fftSize);
+  if (!analyser) return;
   (function loop(){ if(!listening) return;
+    const buf=new Float32Array(analyser.fftSize);
     analyser.getFloatTimeDomainData(buf);
-    let sum=0; for(let i=0;i<buf.length;i++) sum+=buf[i]*i/ i; // avoid Chrome minifier warnings
-  })();
-  // (use existing micLevel update)
-  (function loop2(){ if(!listening) return;
-    const buf2=new Float32Array(analyser.fftSize);
-    analyser.getFloatTimeDomainData(buf2);
-    let sum=0; for(let i=0;i<buf2.length;i++) sum+=buf2[i]*buf2[i];
-    const rms=Math.sqrt(sum/buf2.length);
+    let sum=0; for(let i=0;i<buf.length;i++) sum+=buf[i]*buf[i];
+    const rms=Math.sqrt(sum/buf.length);
     const target = Math.max(0, Math.min(1, (rms-MIC_NOISE)*MIC_GAIN));
     micLevel = micLevel*(1-MIC_SMOOTH) + target*MIC_SMOOTH;
+    chipLvl.textContent = 'Level: ' + micLevel.toFixed(2);
     if (micLevel > SILENCE_START_THRESHOLD) lastLoudAt = performance.now();
-    requestAnimationFrame(loop2);
+    requestAnimationFrame(loop);
   })();
 }
 function vadLoop(){
   (function loop(){ if(!listening) return;
     const now=performance.now();
+    const timeSinceStart = now - listenStartedAt;
     const longSilent = (now - lastLoudAt) > SILENCE_HOLD_MS;
-    const tooLong = (now - listenStartedAt) > LISTEN_MAX_MS;
-    if (longSilent || tooLong){
-      try{ recognition && recognition.stop && recognition.stop(); }catch(e){}
-      return;
+    const tooLong = timeSinceStart > LISTEN_MAX_MS;
+
+    // If we haven't heard speech yet, don't stop early;
+    // give INITIAL_GRACE_MS before we even consider silence.
+    if (!heardSpeech){
+      if (tooLong){ try{ recognition && recognition.stop && recognition.stop(); }catch(e){} }
+    } else {
+      if (longSilent || tooLong){ try{ recognition && recognition.stop && recognition.stop(); }catch(e){} }
     }
     requestAnimationFrame(loop);
   })();
 }
 
-/* ===== Drawer, chat, greet ===== */
+/* ====== Drawer, chat, greet ====== */
 const drawer=document.getElementById('drawer'), openDrawer=document.getElementById('openDrawer'), closeDrawer=document.getElementById('closeDrawer');
 openDrawer.onclick=()=>drawer.classList.add('open'); closeDrawer.onclick=()=>drawer.classList.remove('open');
 
 const feed=document.getElementById('feed'), input=document.getElementById('text'), sendBtn=document.getElementById('send'), clearBtn=document.getElementById('clearChat');
+const btnPing=document.getElementById('btnPing'), btnSample=document.getElementById('btnSample');
+
+btnPing.onclick=()=>{ const id=showThinking('Pinging API…'); API.meta().then(m=>{ doneThinking(id); logBotCard('API OK • timezone: ' + (m?.timezone||'n/a')); }); };
+btnSample.onclick=()=>{ const q='check cowley forms for last week'; logSTT(q);
+  const id=showThinking('Scanning forms…'); API.nlp(q).then(p=>{ doneThinking(id); if(!p){ logBotCard('Server error.'); speak('Server error.'); return;}
+  showPayload(p); speak(p.summaryLine||'Done.'); }).catch(()=>{ doneThinking(id); logBotCard('Network problem.'); speak('Network problem.'); });
+};
+
 sendBtn.onclick=()=>{ if(!input.value.trim()) return; const q=input.value.trim(); logSTT(q);
-  const thinkId = showThinking('Scanning forms and responses…');
+  const id = showThinking('Scanning forms and responses…');
   API.nlp(q).then(payload=>{
-    doneThinking(thinkId);
+    doneThinking(id);
     if (!payload){ logBotCard('Could not reach the server.'); speak('Sorry, I could not reach the server.'); return; }
     showPayload(payload);
     speak(payload.summaryLine || 'Done.');
-  }).catch(()=>{
-    doneThinking(thinkId);
-    logBotCard('Network problem talking to the server.');
-    speak('There was a network problem talking to the server.');
-  });
+  }).catch(()=>{ doneThinking(id); logBotCard('Network problem talking to the server.'); speak('There was a network problem talking to the server.'); });
   input.value='';
 };
 input.addEventListener('keydown',e=>{ if(e.key==='Enter') sendBtn.click(); });
@@ -490,12 +506,11 @@ function greet(after){
     "Hey there! Ask me for a location or form and I’ll check it."
   ];
   const line = `${lines[Math.floor(Math.random()*lines.length)]} It’s ${now.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})} on ${now.toLocaleDateString([], {weekday:'long', month:'short', day:'numeric'})}. You can interrupt by speaking anytime.`;
-  logTTS(line);
-  speak(line);
+  logTTS(line); speak(line);
   if (after) setTimeout(()=>{ try{ after(); }catch(e){} }, 1200);
 }
 
-/* ===== “Working…” card while querying ===== */
+/* ====== “Working…” card ====== */
 let thinkingCardId=0;
 function showThinking(msg='Scanning forms…'){
   const id=++thinkingCardId;
@@ -508,7 +523,7 @@ function doneThinking(id, replaceHtml){
   if (replaceHtml) el.outerHTML = replaceHtml; else el.remove();
 }
 
-/* ===== Render payload ===== */
+/* ====== Render payload ====== */
 function showPayload(payload){
   const { queryParsed, summary, results } = payload;
   const hdr = `<div class="card"><div><b>Range:</b> ${summary.range.startISO.slice(0,10)} → ${summary.range.endISO.slice(0,10)}</div>
@@ -543,7 +558,7 @@ function card(r,badge){
     <div class="muted"><a target="_blank" href="${r.formUrl}">Open form</a> · <a target="_blank" href="${r.responsesUrl}">Responses sheet</a></div></div>`;
 }
 
-/* ===== Safe HTML escape ===== */
+/* ====== Safe escape ====== */
 function escapeHtml(s){
   return String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;', "'":'&#39;'}[m]));
 }
