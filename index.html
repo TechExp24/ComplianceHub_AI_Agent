@@ -4,6 +4,8 @@
   <meta charset="utf-8" />
   <title>Compliance Agent</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- Silence the favicon 404 -->
+  <link rel="icon" href="data:,">
   <style>
     :root{ --bg:#F7F8FC; --panel:#FFF; --ink:#2C3142; --muted:#8C95A6; --brand:#4F8CF3;
            --radius:18px; --shadow:0 10px 28px rgba(55,97,194,.12); }
@@ -75,6 +77,7 @@
       <div class="chips">
         <div class="chip" id="chipState">Idle</div>
         <div class="chip" id="chipMic">Mic: …</div>
+        <div class="chip" id="chipSR">SR: …</div>
         <div class="chip" id="chipTZ">Loading…</div>
       </div>
       <div class="tapOverlay" id="tap" aria-label="Tap to speak"></div>
@@ -112,8 +115,10 @@
 <script>
 /* ===== CONFIG ===== */
 const API_BASE = 'https://script.google.com/macros/s/AKfycbxZ5PsA_5d2jkE6n5W3tqLro08rvJqp5JtX88I039JdTPCbTH1_VzAtwi8BGFwd_euUjQ/exec'; // e.g. https://script.google.com/macros/s/AK.../exec
-const USE_SERVER_TTS = true;  // set true if you added TTS_API_KEY in Apps Script
+const USE_SERVER_TTS = true;     // true if you set TTS_API_KEY in Apps Script
 const GREET_ON_FIRST_TAP = true;
+const AUTO_TURN_TAKING = true;    // auto-listen after agent finishes talking
+const TURN_TAKE_DELAY_MS = 1000;  // 1s pause before re-listening
 
 /* ===== JSONP loader (avoids CORS) ===== */
 function jsonp(url){
@@ -134,15 +139,16 @@ const API = {
 };
 
 /* ===== TUNABLE KNOBS (VAD + Anim) ===== */
-const MIC_NOISE = 0.05;      // raise in noisy room
-const MIC_GAIN  = 8;         // lower if orb jumps too much
-const MIC_SMOOTH= 0.16;      // raise to slow the response
-const LISTEN_MAX_MS = 8000;  // hard stop after 8s
-const SILENCE_START_THRESHOLD = 0.11; // above this = “voice”
-const SILENCE_HOLD_MS = 900; // stop after 0.9s of silence
+const MIC_NOISE = 0.05;
+const MIC_GAIN  = 8;
+const MIC_SMOOTH= 0.16;
+const LISTEN_MAX_MS = 8000;
+const SILENCE_START_THRESHOLD = 0.11;
+const SILENCE_HOLD_MS = 900;
 
-/* ===== Mic status helper ===== */
+/* ===== Mic & SR status ===== */
 const chipMic = document.getElementById('chipMic');
+const chipSR  = document.getElementById('chipSR');
 async function refreshMicStatus(){
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
     chipMic.textContent = 'Mic: unsupported'; return;
@@ -150,13 +156,18 @@ async function refreshMicStatus(){
   if (navigator.permissions && navigator.permissions.query){
     try{
       const p = await navigator.permissions.query({name:'microphone'});
-      chipMic.textContent = 'Mic: ' + p.state; p.onchange=()=> chipMic.textContent='Mic: ' + p.state;
+      chipMic.textContent = 'Mic: ' + p.state;
+      p.onchange=()=> chipMic.textContent='Mic: ' + p.state;
       return;
     }catch(e){}
   }
   chipMic.textContent = 'Mic: ready';
 }
-refreshMicStatus();
+function refreshSRStatus(){
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  chipSR.textContent = SR ? 'SR: available' : 'SR: not supported';
+}
+refreshMicStatus(); refreshSRStatus();
 
 /* ===== Neon waves ===== */
 const waves = document.getElementById('waves');
@@ -278,7 +289,8 @@ function playAudioB64(b64, transcript){
   const audio = new Audio('data:audio/mp3;base64,' + b64);
   currentAudio = audio;
   audio.onplay = ()=>{ speaking=true; setMode('speaking'); pulseSpeak(); logTTS(transcript); liveCap.textContent='Agent: ' + transcript; };
-  audio.onended=()=>{ speaking=false; setMode('idle'); speakLevel=0; liveCap.textContent='Tap to speak'; currentAudio=null; };
+  audio.onended=()=>{ speaking=false; setMode('idle'); speakLevel=0; liveCap.textContent='Tap to speak'; currentAudio=null;
+                      if (AUTO_TURN_TAKING) setTimeout(()=>{ startListening(); }, TURN_TAKE_DELAY_MS); };
   audio.play().catch(()=>{ speakWithPersona(transcript, currentPersona()); });
 }
 function speakWithPersona(text, persona, isPreview=false){
@@ -287,7 +299,7 @@ function speakWithPersona(text, persona, isPreview=false){
   const u=new SpeechSynthesisUtterance(text);
   const v=pickVoiceFor(persona); if (v) u.voice=v; u.pitch=persona.pitch; u.rate=persona.rate;
   u.onstart=()=>{ speaking=true; setMode('speaking'); pulseSpeak(); if(!isPreview){ logTTS(text); } liveCap.textContent='Agent: ' + text; };
-  u.onend=()=>{ speaking=false; setMode('idle'); speakLevel=0; if(!isPreview){ liveCap.textContent='Tap to speak'; } };
+  u.onend=()=>{ speaking=false; setMode('idle'); speakLevel=0; if(!isPreview){ liveCap.textContent='Tap to speak'; if (AUTO_TURN_TAKING) setTimeout(()=>{ startListening(); }, TURN_TAKE_DELAY_MS); } };
   speechSynthesis.speak(u);
 }
 function pulseSpeak(){ if(!speaking) return; const now=performance.now()/1000; speakLevel=0.18+0.14*Math.sin(now*2.6); requestAnimationFrame(pulseSpeak); }
@@ -316,10 +328,11 @@ const tapArea=document.getElementById('tap');
 let firstTapDone=false;
 
 tapArea.addEventListener('click', async ()=>{
-  if (speaking){ stopSpeaking(); startListening(); return; } // interrupt talking
+  if (speaking){ stopSpeaking(); startListening(); return; }
   if (!firstTapDone && GREET_ON_FIRST_TAP){
     firstTapDone = true;
-    await primeMicPermission();
+    const ok = await primeMicPermission();
+    if (!ok) return;
     greet(()=> startListening());
     return;
   }
@@ -328,11 +341,13 @@ tapArea.addEventListener('click', async ()=>{
 drawerMic.onclick=()=>{ if(speaking){ stopSpeaking(); } listening? stopListening() : startListening(); };
 
 function startListening(){
-  if (listening) return;
-  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
-    alert('Microphone not supported in this browser. Use the chat box or try Chrome.');
-    liveCap.textContent='Mic unsupported. Use chat.'; return;
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR){
+    chipSR.textContent='SR: not supported';
+    logBotCard('Speech recognition is not supported in this browser. Please use the text box or try Chrome.');
+    return;
   }
+  if (listening) return;
 
   navigator.mediaDevices.getUserMedia({audio:true}).then(stream=>{
     stopSpeaking();
@@ -343,34 +358,53 @@ function startListening(){
     analyser = audioCtx.createAnalyser(); analyser.fftSize=2048; analyser.smoothingTimeConstant=0.85;
     micSrc.connect(analyser);
 
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR){
-      logBotCard('Speech recognition is not supported in this browser. Please use the text box or try Google Chrome.');
-      setMode('idle'); liveCap.textContent='Use chat (no speech in this browser)';
-      setTimeout(()=>{ stopListening(); }, 1200);
-      return;
-    }
-
     recognition = new SR();
-    recognition.lang='en-GB'; recognition.interimResults=true; recognition.maxAlternatives=1;
+    recognition.lang='en-GB';
+    recognition.interimResults=true;
+    recognition.maxAlternatives=1;
+    // More event logging for reliability
+    recognition.onaudiostart = ()=> { chipSR.textContent='SR: audio-start'; };
+    recognition.onsoundstart = ()=> { chipSR.textContent='SR: sound-start'; };
+    recognition.onspeechstart= ()=> { chipSR.textContent='SR: speech-start'; };
+    recognition.onsoundend  = ()=> { /* keep quiet */ };
+    recognition.onaudioend  = ()=> { /* keep quiet */ };
+    recognition.onnomatch   = ()=> { logBotCard('I didn’t catch that.'); };
+    recognition.onerror     = (e)=>{
+      console.warn('SR error', e.error);
+      let msg='Speech recognition error.';
+      if (e.error === 'no-speech') msg='No speech heard. Try again a bit closer to the mic.';
+      if (e.error === 'audio-capture') msg='No microphone found. Check your mic device.';
+      if (e.error === 'not-allowed') msg='Microphone blocked. Click the padlock in the address bar → allow microphone, then reload.';
+      chipSR.textContent='SR: error ' + e.error;
+      logBotCard(msg);
+    };
+    recognition.onend = ()=>{ stopListening(); };
+
+    recognition.onresult = e => {
+      let s=''; for(let i=e.resultIndex;i<e.results.length;i++) s+=e.results[i][0].transcript+' ';
+      const text = s.trim();
+      liveCap.textContent = text ? ('You: ' + text) : 'Listening…';
+      const isFinal = e.results[e.results.length-1].isFinal;
+      if (isFinal && text){
+        logSTT(text);
+        const thinkId = showThinking('Scanning forms and responses…');
+        API.nlp(text).then(payload=>{
+          doneThinking(thinkId);
+          if (!payload){ logBotCard('Could not reach the server.'); speak('Sorry, I could not reach the server.'); return; }
+          showPayload(payload);
+          speak(payload.summaryLine || 'Done.');
+        }).catch(()=>{
+          doneThinking(thinkId);
+          logBotCard('Network problem talking to the server.');
+          speak('There was a network problem talking to the server.');
+        });
+      }
+    };
 
     listening=true; setMode('listening');
     listenStartedAt=performance.now(); lastLoudAt=listenStartedAt;
 
-    recognition.onresult = e => {
-      let s=''; for(let i=e.resultIndex;i<e.results.length;i++) s+=e.results[i][0].transcript+' ';
-      liveCap.textContent='You: ' + s.trim();
-      const isFinal = e.results[e.results.length-1].isFinal;
-      if (isFinal){
-        const finalTxt = s.trim();
-        logSTT(finalTxt);
-        handleQuery(finalTxt);
-      }
-    };
-    recognition.onerror = e => { console.warn('SR error', e.error); };
-    recognition.onend = ()=>{ stopListening(); };
-
-    try{ recognition.start(); }catch(e){ console.warn(e); }
+    try{ recognition.start(); chipSR.textContent='SR: started'; }catch(e){ console.warn(e); chipSR.textContent='SR: failed to start'; }
 
     meter(); vadLoop();
   }).catch(err=>{
@@ -392,12 +426,18 @@ function meter(){
   const buf=new Float32Array(analyser.fftSize);
   (function loop(){ if(!listening) return;
     analyser.getFloatTimeDomainData(buf);
-    let sum=0; for(let i=0;i<buf.length;i++) sum+=buf[i]*buf[i];
-    const rms=Math.sqrt(sum/buf.length);
+    let sum=0; for(let i=0;i<buf.length;i++) sum+=buf[i]*i/ i; // avoid Chrome minifier warnings
+  })();
+  // (use existing micLevel update)
+  (function loop2(){ if(!listening) return;
+    const buf2=new Float32Array(analyser.fftSize);
+    analyser.getFloatTimeDomainData(buf2);
+    let sum=0; for(let i=0;i<buf2.length;i++) sum+=buf2[i]*buf2[i];
+    const rms=Math.sqrt(sum/buf2.length);
     const target = Math.max(0, Math.min(1, (rms-MIC_NOISE)*MIC_GAIN));
     micLevel = micLevel*(1-MIC_SMOOTH) + target*MIC_SMOOTH;
     if (micLevel > SILENCE_START_THRESHOLD) lastLoudAt = performance.now();
-    requestAnimationFrame(loop);
+    requestAnimationFrame(loop2);
   })();
 }
 function vadLoop(){
@@ -413,12 +453,25 @@ function vadLoop(){
   })();
 }
 
-/* ===== Drawer, chat, greet (no auto on load) ===== */
+/* ===== Drawer, chat, greet ===== */
 const drawer=document.getElementById('drawer'), openDrawer=document.getElementById('openDrawer'), closeDrawer=document.getElementById('closeDrawer');
 openDrawer.onclick=()=>drawer.classList.add('open'); closeDrawer.onclick=()=>drawer.classList.remove('open');
 
 const feed=document.getElementById('feed'), input=document.getElementById('text'), sendBtn=document.getElementById('send'), clearBtn=document.getElementById('clearChat');
-sendBtn.onclick=()=>{ if(!input.value.trim()) return; const q=input.value.trim(); logSTT(q); handleQuery(q); input.value=''; };
+sendBtn.onclick=()=>{ if(!input.value.trim()) return; const q=input.value.trim(); logSTT(q);
+  const thinkId = showThinking('Scanning forms and responses…');
+  API.nlp(q).then(payload=>{
+    doneThinking(thinkId);
+    if (!payload){ logBotCard('Could not reach the server.'); speak('Sorry, I could not reach the server.'); return; }
+    showPayload(payload);
+    speak(payload.summaryLine || 'Done.');
+  }).catch(()=>{
+    doneThinking(thinkId);
+    logBotCard('Network problem talking to the server.');
+    speak('There was a network problem talking to the server.');
+  });
+  input.value='';
+};
 input.addEventListener('keydown',e=>{ if(e.key==='Enter') sendBtn.click(); });
 clearBtn.onclick=()=>{ if (confirm('Clear chat history?')) { localStorage.removeItem('chat.feed'); feed.innerHTML=''; } };
 function push(html){ feed.insertAdjacentHTML('beforeend', html); feed.scrollTop=feed.scrollHeight; localStorage.setItem('chat.feed', feed.innerHTML); }
@@ -455,41 +508,7 @@ function doneThinking(id, replaceHtml){
   if (replaceHtml) el.outerHTML = replaceHtml; else el.remove();
 }
 
-/* ===== Intent & rendering ===== */
-function handleQuery(text){
-  const s=text.trim().toLowerCase();
-  if (!s) return;
-
-  // small talk
-  if (/^(hi|hello|hey|yo|good\s*(morning|afternoon|evening))\b/.test(s) || /how are you/.test(s)){
-    const opens=[
-      "Hi! Want me to check today’s opening or temperature forms?",
-      "Hello! Which location or form should I review first?",
-      "Hey—say a location like Cowley or St. Clements and I’ll scan it."
-    ];
-    const reply=opens[Math.floor(Math.random()*opens.length)];
-    logTTS(reply); speak(reply); return;
-  }
-
-  const looksCompliance=/(check|forms?|submit|submissions?|missing|missed|today|yesterday|week|month|cowley|high street|clements|ricks|philly|clair|temperature|opening|closing|wastage|breading|prep|toilet|staff|who)/.test(s);
-  if(!looksCompliance){
-    const reply="Try “check cowley opening today” or “did maruthi submit temperature at st. clair?”";
-    logTTS(reply); speak(reply); return;
-  }
-
-  const thinkId = showThinking('Scanning forms and responses…');
-  API.nlp(text).then(payload=>{
-    doneThinking(thinkId);
-    if (!payload){ const msg='Could not reach the server. Please reload and try again.'; logBotCard(msg); speak('Sorry, I could not reach the server.'); return; }
-    showPayload(payload);
-    speak(payload.summaryLine || 'Done.');
-  }).catch(()=>{
-    doneThinking(thinkId);
-    logBotCard('Network problem talking to the server.');
-    speak('There was a network problem talking to the server.');
-  });
-}
-
+/* ===== Render payload ===== */
 function showPayload(payload){
   const { queryParsed, summary, results } = payload;
   const hdr = `<div class="card"><div><b>Range:</b> ${summary.range.startISO.slice(0,10)} → ${summary.range.endISO.slice(0,10)}</div>
@@ -524,7 +543,7 @@ function card(r,badge){
     <div class="muted"><a target="_blank" href="${r.formUrl}">Open form</a> · <a target="_blank" href="${r.responsesUrl}">Responses sheet</a></div></div>`;
 }
 
-/* ===== Safe HTML escape (fixes Rick's) ===== */
+/* ===== Safe HTML escape ===== */
 function escapeHtml(s){
   return String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;', "'":'&#39;'}[m]));
 }
